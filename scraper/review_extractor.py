@@ -1,372 +1,432 @@
 import time
-import gc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
+from selenium.common.exceptions import TimeoutException, NoSuchElementException, WebDriverException
+from selenium.webdriver.remote.webdriver import WebDriver
+from typing import List, Dict, Optional, Any
+from utils.logger import Logger
 
-class ReviewExtractor:
-    def __init__(self, driver, logger):
+class ReviewTypeDetector:
+    # Class-level cache for review type
+    _cached_review_type = None
+    _cache_initialized = False
+    
+    def __init__(self, driver: WebDriver, logger: Logger):
         self.driver = driver
         self.logger = logger
-        self.scroll_timeout = 30
+        self.confidence_threshold = 4
+        self.low_confidence_threshold = 2
     
-    def classify_review_type(self):
+    def detect_review_type(self) -> int:
+        # Use cached result if available
+        if ReviewTypeDetector._cache_initialized and ReviewTypeDetector._cached_review_type is not None:
+            self.logger.classify(f"Using cached review type: {ReviewTypeDetector._cached_review_type}")
+            return ReviewTypeDetector._cached_review_type
+        
         try:
-            # Multi-Layer Detection for Type 2 (Try Type 2 detection FIRST)
-            type2_confidence_score = 0
-            detection_methods = []
-            div3_exists = False
-            
-            # Check if div[3] exists (for Type 1 validation later)
-            div3_xpath = '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[3]'
-            try:
-                div3_element = self.driver.find_element(By.XPATH, div3_xpath)
-                div3_exists = True
-            except NoSuchElementException:
-                self.logger.extract("div[3] not found - will check for Type 2 before failing")
-            
-            # Multi-Layer Detection for Type 2 (Conservative Approach)
-            
-            # Layer 1: URL Pattern Detection (Weight: 3)
-            try:
-                current_url = self.driver.current_url
-                if 'scheduling' in current_url or 'book' in current_url:
-                    type2_confidence_score += 3
-                    detection_methods.append("URL pattern")
-            except Exception:
-                pass
-            
-            # Layer 2: High-Confidence Element Detection (Weight: 3)
-            type2_high_confidence_selectors = [
-                '.s35xed',  # Book online container
-                '.faY1Me',  # Book content container
-                'a[href*="scheduling/patient-lookup"]',  # CVS booking link
-            ]
-            
-            for selector in type2_high_confidence_selectors:
-                try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if elements and len(elements) > 0:
-                        type2_confidence_score += 3
-                        detection_methods.append(f"Element: {selector}")
-                        break  # Only count once for high-confidence
-                except Exception:
-                    continue
-            
-            # Layer 3: Text-based Detection (Weight: 2)
-            type2_text_indicators = [
-                "Browse and book now",
-                "See prices and availability",
-                "Book online"
-            ]
-            
-            try:
-                page_source = self.driver.page_source
-                for indicator in type2_text_indicators:
-                    if indicator in page_source:
-                        type2_confidence_score += 2
-                        detection_methods.append(f"Text: {indicator}")
-                        break  # Only count once for text detection
-            except Exception:
-                pass
-            
-            # Layer 4: XPath-based Detection (Weight: 2)
-            type2_xpath_selectors = [
-                "//span[text()='Book online']",
-                "//span[text()='Browse and book now']",
-                "//a[contains(@href, 'scheduling')]",
-                "//a[contains(@href, 'book')]"
-            ]
-            
-            for xpath in type2_xpath_selectors:
-                try:
-                    elements = self.driver.find_elements(By.XPATH, xpath)
-                    if elements and len(elements) > 0:
-                        type2_confidence_score += 2
-                        detection_methods.append(f"XPath: {xpath}")
-                        break  # Only count once for XPath detection
-                except Exception:
-                    continue
-            
-            # Layer 5: div[5] Analysis (Weight: 1, only if div[5] exists)
-            try:
-                div5_xpath = '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[5]'
-                div5_element = self.driver.find_element(By.XPATH, div5_xpath)
-                div5_text = div5_element.text.lower()
-                
-                booking_keywords = ['book', 'browse', 'availability', 'scheduling', 'reserve']
-                if any(keyword in div5_text for keyword in booking_keywords):
-                    type2_confidence_score += 1
-                    detection_methods.append("div[5] analysis")
-            except NoSuchElementException:
-                # div[5] doesn't exist - this is normal for Type 1
-                pass
-            except Exception:
-                pass
-            
-            # Decision Logic: Require high confidence for Type 2
-            # Minimum score of 4 needed to classify as Type 2
-            if type2_confidence_score >= 4:
-                detection_info = ", ".join(detection_methods)
-                self.logger.classify(f"Type 2 detected (confidence: {type2_confidence_score}) via: {detection_info}")
+            # Fast exit strategy - check high confidence elements first
+            if self._quick_type2_check():
+                ReviewTypeDetector._cached_review_type = 2
+                ReviewTypeDetector._cache_initialized = True
+                self.logger.classify("Type 2 detected (quick check)")
                 return 2
-            else:
-                # If Type 2 confidence is low, check if Type 1 is viable
-                if not div3_exists:
-                    if type2_confidence_score >= 2:  # Lower threshold when div[3] doesn't exist
-                        detection_info = ", ".join(detection_methods)
-                        self.logger.classify(f"Type 2 detected (div[3] missing, confidence: {type2_confidence_score}) via: {detection_info}")
-                        return 2
-                    else:
-                        self.logger.error("Critical: Neither Type 1 (no div[3]) nor Type 2 (low confidence) viable")
-                        return 1  # Default fallback
-                else:
-                    if type2_confidence_score > 0:
-                        detection_info = ", ".join(detection_methods)
-                        self.logger.classify(f"Type 1 detected (Type 2 confidence too low: {type2_confidence_score}) methods: {detection_info}")
-                    else:
-                        self.logger.classify("Type 1 detected (no booking features found)")
-                    return 1
+            
+            # Full detection only if quick check fails
+            type2_score = self._calculate_type2_confidence()
+            div3_exists = self._check_div3_existence()
+            
+            if type2_score >= self.confidence_threshold:
+                ReviewTypeDetector._cached_review_type = 2
+                ReviewTypeDetector._cache_initialized = True
+                self.logger.classify(f"Type 2 detected with high confidence: {type2_score}")
+                return 2
+            
+            if not div3_exists and type2_score >= self.low_confidence_threshold:
+                ReviewTypeDetector._cached_review_type = 2
+                ReviewTypeDetector._cache_initialized = True
+                self.logger.classify(f"Type 2 detected (no div[3], confidence: {type2_score})")
+                return 2
+            
+            if not div3_exists and type2_score < self.low_confidence_threshold:
+                ReviewTypeDetector._cached_review_type = 1
+                ReviewTypeDetector._cache_initialized = True
+                self.logger.error("Critical: Neither Type 1 nor Type 2 viable")
+                return 1
+            
+            ReviewTypeDetector._cached_review_type = 1
+            ReviewTypeDetector._cache_initialized = True
+            self.logger.classify(f"Type 1 detected (Type 2 confidence too low: {type2_score})")
+            return 1
             
         except Exception as e:
-            self.logger.error(f"Failed to classify review type: {str(e)} - Defaulting to Type 1")
+            ReviewTypeDetector._cached_review_type = 1
+            ReviewTypeDetector._cache_initialized = True
+            self.logger.error(f"Error detecting review type: {e}, defaulting to Type 1")
             return 1
     
-    def _navigate_to_reviews_tab(self):
+    def _quick_type2_check(self) -> bool:
+        """Fast check for Type 2 indicators"""
         try:
-            reviews_buttons = self.driver.find_elements(By.CSS_SELECTOR, 'button.hh2c6[role="tab"]')
+            # Check only the most reliable indicators first
+            elements = self.driver.find_elements(By.CSS_SELECTOR, '.s35xed')
+            if elements:
+                return True
             
-            for button in reviews_buttons:
-                aria_label = button.get_attribute('aria-label')
-                if aria_label and 'Reviews for' in aria_label:
-                    button.click()
-                    time.sleep(3)
-                    return True
+            elements = self.driver.find_elements(By.CSS_SELECTOR, 'a[href*="scheduling"]')
+            if elements:
+                return True
             
             return False
-            
-        except Exception as e:
-            self.logger.error(f"Failed to navigate to reviews tab: {str(e)}")
+        except Exception:
             return False
     
-    def _get_scroll_area_xpath(self, review_type):
-        if review_type == 2:
-            return '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[5]'
-        else:
-            return '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[3]'
+    def _calculate_type2_confidence(self) -> int:
+        score = 0
+        
+        # Removed text indicators (slowest operation)
+        score += self._check_high_confidence_elements() * 3
+        score += self._check_xpath_selectors() * 2
+        
+        return score
     
-    def _scroll_to_bottom(self, review_type):
-        try:
-            scroll_xpath = self._get_scroll_area_xpath(review_type)
-            
-            # SAFETY CHECK: Ensure scroll container exists
+    def _check_high_confidence_elements(self) -> int:
+        selectors = ['.s35xed', '.faY1Me', 'a[href*="scheduling/patient-lookup"]']
+        
+        for selector in selectors:
             try:
-                scroll_container = self.driver.find_element(By.XPATH, scroll_xpath)
-                self.logger.extract(f"Type {review_type} scroll container found")
-            except NoSuchElementException:
-                # If Type 2 scroll area doesn't exist, fallback to Type 1
-                if review_type == 2:
-                    self.logger.extract("Type 2 scroll area (div[5]) not found, falling back to Type 1")
-                    scroll_xpath = self._get_scroll_area_xpath(1)
-                    try:
-                        scroll_container = self.driver.find_element(By.XPATH, scroll_xpath)
-                        self.logger.extract("Type 1 fallback scroll container found")
-                    except NoSuchElementException:
-                        # Try alternative scroll areas for Type 2
-                        alternative_scroll_areas = [
-                            '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[4]',  # Alternative div[4]
-                            '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div',  # Parent container
-                        ]
-                        
-                        for alt_xpath in alternative_scroll_areas:
-                            try:
-                                scroll_container = self.driver.find_element(By.XPATH, alt_xpath)
-                                self.logger.extract(f"Alternative scroll container found: {alt_xpath}")
-                                break
-                            except NoSuchElementException:
-                                continue
-                        else:
-                            self.logger.error("Critical: No scroll container found")
-                            return False
-                else:
-                    self.logger.error("Type 1 scroll container not found")
-                    return False
-            
-            last_height = self.driver.execute_script("return arguments[0].scrollHeight", scroll_container)
-            start_time = time.time()
-            no_change_count = 0
-            
-            self.logger.extract(f"Starting scroll in Type {review_type} area")
-            
-            while True:
-                # Scroll to bottom
-                self.driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", scroll_container)
-                time.sleep(2)
-                
-                # Check for new content
-                new_height = self.driver.execute_script("return arguments[0].scrollHeight", scroll_container)
-                
-                if new_height == last_height:
-                    no_change_count += 1
-                    # Give it 2 more chances before stopping
-                    if no_change_count >= 3:
-                        self.logger.extract("No new content loaded, scroll complete")
-                        break
-                    time.sleep(2)  # Wait a bit more for slow loading
-                else:
-                    no_change_count = 0  # Reset counter if new content found
-                    last_height = new_height
-                
-                # Timeout protection
-                if time.time() - start_time > self.scroll_timeout:
-                    self.logger.extract("Scroll timeout reached, stopping")
-                    break
-            
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if elements:
+                    return 1
+            except Exception:
+                continue
+        return 0
+    
+    def _check_text_indicators(self) -> int:
+        indicators = ["Browse and book now", "See prices and availability", "Book online"]
+        
+        try:
+            page_source = self.driver.page_source
+            if any(indicator in page_source for indicator in indicators):
+                return 1
+        except Exception:
+            pass
+        return 0
+    
+    def _check_xpath_selectors(self) -> int:
+        # Reduced to most effective XPaths only
+        xpaths = [
+            "//a[contains(@href, 'scheduling')]",
+            "//span[text()='Book online']"
+        ]
+        
+        for xpath in xpaths:
+            try:
+                elements = self.driver.find_elements(By.XPATH, xpath)
+                if elements:
+                    return 1
+            except Exception:
+                continue
+        return 0
+    
+    def _check_div3_existence(self) -> bool:
+        try:
+            self.driver.find_element(By.XPATH, 
+                '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[3]')
             return True
-            
+        except NoSuchElementException:
+            return False
+
+class ReviewScrollManager:
+    # Class-level cache for successful scroll container
+    _cached_scroll_xpath = None
+    _cached_review_type = None
+    
+    def __init__(self, driver: WebDriver, logger: Logger):
+        self.driver = driver
+        self.logger = logger
+        self.max_no_change_count = 3
+    
+    def get_scroll_container(self, review_type: int) -> Optional[Any]:
+        # Use cached container if available and same review type
+        if (ReviewScrollManager._cached_scroll_xpath and 
+            ReviewScrollManager._cached_review_type == review_type):
+            try:
+                container = self.driver.find_element(By.XPATH, ReviewScrollManager._cached_scroll_xpath)
+                self.logger.extract(f"Using cached scroll container: {ReviewScrollManager._cached_scroll_xpath}")
+                return container
+            except NoSuchElementException:
+                # Cache invalid, clear it
+                ReviewScrollManager._cached_scroll_xpath = None
+                ReviewScrollManager._cached_review_type = None
+        
+        scroll_areas = self._get_scroll_area_candidates(review_type)
+        
+        for xpath in scroll_areas:
+            try:
+                container = self.driver.find_element(By.XPATH, xpath)
+                # Cache successful xpath
+                ReviewScrollManager._cached_scroll_xpath = xpath
+                ReviewScrollManager._cached_review_type = review_type
+                self.logger.extract(f"Found and cached scroll container: {xpath}")
+                return container
+            except NoSuchElementException:
+                continue
+        
+        self.logger.error("No scroll container found")
+        return None
+    
+    def _get_scroll_area_candidates(self, review_type: int) -> List[str]:
+        if review_type == 2:
+            return [
+                '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[5]',
+                '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[3]',
+                '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[4]',
+                '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div'
+            ]
+        else:
+            return [
+                '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[3]',
+                '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div'
+            ]
+    
+    def scroll_to_bottom(self, review_type: int) -> bool:
+        container = self.get_scroll_container(review_type)
+        if not container:
+            return False
+        
+        try:
+            return self._perform_scroll(container)
         except Exception as e:
-            self.logger.error(f"Failed to scroll reviews: {str(e)}")
+            self.logger.error(f"Scroll operation failed: {e}")
             return False
     
-    def _extract_review_elements(self, review_type):
+    def _perform_scroll(self, container: Any) -> bool:
+        last_height = self.driver.execute_script("return arguments[0].scrollHeight", container)
+        no_change_count = 0
+        
+        self.logger.extract("Starting scroll operation")
+        
+        while True:
+            self.driver.execute_script("arguments[0].scrollTop = arguments[0].scrollHeight", container)            
+            new_height = self.driver.execute_script("return arguments[0].scrollHeight", container)
+            
+            if new_height == last_height:
+                no_change_count += 1
+                if no_change_count >= self.max_no_change_count:
+                    self.logger.extract("No new content loaded, scroll complete")
+                    break
+                time.sleep(2)
+            else:
+                no_change_count = 0
+                last_height = new_height
+        
+        return True
+
+
+class ReviewParser:
+    def __init__(self, driver: WebDriver, logger: Logger):
+        self.driver = driver
+        self.logger = logger
+        self.review_selectors = [
+            '.jftiEf.fontBodyMedium',
+            '.jftiEf',
+            '[data-review-id]'
+        ]
+    
+    def extract_reviews(self) -> List[Dict[str, Any]]:
         try:
+            review_elements = self._find_review_elements()
+            if not review_elements:
+                return []
+            
             reviews = []
+            successful_count = 0
             
-            # Try multiple selectors for maximum compatibility
-            review_selectors = [
-                '.jftiEf.fontBodyMedium',  # Primary selector
-                '.jftiEf',  # Fallback selector
-                '[data-review-id]'  # Alternative selector based on review ID
-            ]
-            
-            review_elements = []
-            for selector in review_selectors:
+            for element in review_elements:
                 try:
-                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if elements:
-                        review_elements = elements
-                        self.logger.extract(f"Found {len(elements)} elements with selector: {selector}")
-                        break
+                    review_data = self._parse_single_review(element)
+                    if review_data and review_data.get('reviewer_name'):
+                        reviews.append(review_data)
+                        successful_count += 1
                 except Exception:
                     continue
             
-            if not review_elements:
-                self.logger.extract("No review elements found with any selector")
-                return []
-            
-            # Parse each review element
-            successful_extractions = 0
-            for i, element in enumerate(review_elements):
-                try:
-                    review_data = self._parse_review_element(element)
-                    if review_data and review_data.get('reviewer_name'):  # Ensure we have meaningful data
-                        reviews.append(review_data)
-                        successful_extractions += 1
-                except Exception as e:
-                    continue
-            
-            self.logger.extract(f"Successfully parsed {successful_extractions} out of {len(review_elements)} elements")
+            self.logger.extract(f"Successfully parsed {successful_count}/{len(review_elements)} reviews")
             return reviews
             
         except Exception as e:
-            self.logger.error(f"Failed to extract review elements: {str(e)}")
+            self.logger.error(f"Failed to extract reviews: {e}")
             return []
     
-    def _parse_review_element(self, element):
+    def _find_review_elements(self) -> List[Any]:
+        for selector in self.review_selectors:
+            try:
+                elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                if elements:
+                    self.logger.extract(f"Found {len(elements)} elements with selector: {selector}")
+                    return elements
+            except Exception:
+                continue
+        
+        self.logger.extract("No review elements found")
+        return []
+    
+    def _parse_single_review(self, element: Any) -> Optional[Dict[str, Any]]:
         try:
             review_data = {}
             
-            try:
-                reviewer_name = element.find_element(By.CSS_SELECTOR, '.d4r55').text
-                review_data['reviewer_name'] = reviewer_name
-            except NoSuchElementException:
-                review_data['reviewer_name'] = "Anonymous"
-            
-            try:
-                review_text = element.find_element(By.CSS_SELECTOR, '.wiI7pd').text
-                review_data['review_text'] = review_text
-            except NoSuchElementException:
-                review_data['review_text'] = ""
-            
-            try:
-                review_date = element.find_element(By.CSS_SELECTOR, '.rsqaWe').text
-                review_data['review_date'] = review_date
-            except NoSuchElementException:
-                review_data['review_date'] = ""
-            
-            try:
-                rating_element = element.find_element(By.CSS_SELECTOR, '[aria-label*="stars"]')
-                rating_text = rating_element.get_attribute('aria-label')
-                review_data['rating'] = rating_text
-            except NoSuchElementException:
-                review_data['rating'] = "No rating"
-            
-            try:
-                media_elements = element.find_elements(By.CSS_SELECTOR, 'img[src*="googleusercontent"]')
-                media_links = [img.get_attribute('src') for img in media_elements]
-                review_data['media_links'] = ', '.join(media_links) if media_links else ""
-            except Exception:
-                review_data['media_links'] = ""
-            
-            try:
-                review_id = element.get_attribute('data-review-id')
-                review_data['review_id'] = review_id if review_id else ""
-            except Exception:
-                review_data['review_id'] = ""
+            review_data['reviewer_name'] = self._safe_extract_text(element, '.d4r55', "Anonymous")
+            review_data['review_text'] = self._safe_extract_text(element, '.wiI7pd', "")
+            review_data['review_date'] = self._safe_extract_text(element, '.rsqaWe', "")
+            review_data['rating'] = self._extract_rating(element)
+            review_data['media_links'] = self._extract_media_links(element)
+            review_data['review_id'] = self._extract_review_id(element)
             
             return review_data
             
-        except Exception as e:
+        except Exception:
             return None
     
-    def extract_all_reviews(self, review_type):
+    def _safe_extract_text(self, parent_element: Any, selector: str, default: str) -> str:
         try:
-            self.logger.extract("Starting review extraction process...")
+            element = parent_element.find_element(By.CSS_SELECTOR, selector)
+            return element.text.strip() if element.text else default
+        except NoSuchElementException:
+            return default
+    
+    def _extract_rating(self, element: Any) -> str:
+        try:
+            rating_element = element.find_element(By.CSS_SELECTOR, '[aria-label*="stars"]')
+            return rating_element.get_attribute('aria-label') or "No rating"
+        except NoSuchElementException:
+            return "No rating"
+    
+    def _extract_media_links(self, element: Any) -> str:
+        try:
+            photo_urls = []
             
-            # Navigate to reviews tab
-            if not self._navigate_to_reviews_tab():
+            photo_containers = element.find_elements(By.CSS_SELECTOR, '.KtCyie')
+            
+            for container in photo_containers:
+                buttons = container.find_elements(By.CSS_SELECTOR, 'button.Tya61d')
+                for button in buttons:
+                    style_attr = button.get_attribute('style')
+                    if style_attr and 'background-image: url(' in style_attr:
+                        start = style_attr.find('url("') + 5
+                        end = style_attr.find('")', start)
+                        if start > 4 and end > start:
+                            photo_url = style_attr[start:end]
+                            if 'googleusercontent.com' in photo_url:
+                                photo_urls.append(photo_url)
+            
+            if not photo_urls:
+                media_elements = element.find_elements(By.CSS_SELECTOR, 'img[src*="googleusercontent"]')
+                links = [img.get_attribute('src') for img in media_elements if img.get_attribute('src')]
+                photo_urls.extend(links)
+            
+            return ', '.join(photo_urls)
+        except Exception:
+            return ""
+    
+    def _extract_review_id(self, element: Any) -> str:
+        try:
+            return element.get_attribute('data-review-id') or ""
+        except Exception:
+            return ""
+
+class ReviewTabNavigator:
+    def __init__(self, driver: WebDriver, logger: Logger):
+        self.driver = driver
+        self.logger = logger
+        self.wait_timeout = 3
+        self.reviews_xpath = '//*[@id="QA0Szd"]/div/div/div[1]/div[3]/div/div[1]/div/div/div[2]/div[3]/div/div/button[2]'
+    
+    def navigate_to_reviews(self) -> bool:
+        try:
+            # Direct XPath approach - much faster
+            reviews_button = WebDriverWait(self.driver, self.wait_timeout).until(
+                EC.element_to_be_clickable((By.XPATH, self.reviews_xpath))
+            )
+            reviews_button.click()
+            self.logger.extract("Successfully navigated to reviews tab (direct XPath)")
+            return True
+            
+        except TimeoutException:
+            # Fallback to original method if direct XPath fails
+            self.logger.warning("Direct XPath failed, trying fallback method")
+            return self._fallback_navigate_to_reviews()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to navigate to reviews tab: {e}")
+            return False
+    
+    def _fallback_navigate_to_reviews(self) -> bool:
+        try:
+            review_buttons = self.driver.find_elements(By.CSS_SELECTOR, 'button.hh2c6[role="tab"]')
+            
+            for button in review_buttons:
+                aria_label = button.get_attribute('aria-label')
+                if aria_label and 'Reviews for' in aria_label:
+                    button.click()
+                    time.sleep(1)  # Reduced from 2 seconds
+                    self.logger.extract("Successfully navigated to reviews tab (fallback)")
+                    return True
+            
+            self.logger.warning("Reviews tab not found")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Fallback navigation failed: {e}")
+            return False
+
+
+class ReviewExtractor:
+    def __init__(self, driver: WebDriver, logger: Logger):
+        self.driver = driver
+        self.logger = logger
+        self.type_detector = ReviewTypeDetector(driver, logger)
+        self.scroll_manager = ReviewScrollManager(driver, logger)
+        self.parser = ReviewParser(driver, logger)
+        self.navigator = ReviewTabNavigator(driver, logger)
+    
+    def classify_review_type(self) -> int:
+        return self.type_detector.detect_review_type()
+    
+    def extract_all_reviews(self, review_type: int) -> List[Dict[str, Any]]:
+        try:
+            self.logger.extract("Starting review extraction process")
+            
+            if not self.navigator.navigate_to_reviews():
                 self.logger.error("Could not navigate to reviews tab")
                 return []
             
-            self.logger.extract(f"Found reviews, attempting Type {review_type} scroll...")
+            scroll_success = self.scroll_manager.scroll_to_bottom(review_type)
             
-            # Try scrolling with the detected type
-            scroll_success = self._scroll_to_bottom(review_type)
-            
-            # If Type 2 fails, automatically fallback to Type 1
             if not scroll_success and review_type == 2:
-                self.logger.extract("Type 2 scroll failed, falling back to Type 1...")
-                scroll_success = self._scroll_to_bottom(1)
-                if scroll_success:
-                    self.logger.extract("Type 1 fallback successful")
+                self.logger.extract("Type 2 scroll failed, trying Type 1")
+                scroll_success = self.scroll_manager.scroll_to_bottom(1)
             
-            # If still no success, try to extract what we can
             if not scroll_success:
-                self.logger.extract("Scroll failed, attempting to extract visible reviews...")
+                self.logger.warning("Scroll failed, extracting visible reviews")
             
-            # Extract reviews regardless of scroll success
-            reviews_data = self._extract_review_elements(review_type)
+            reviews_data = self.parser.extract_reviews()
             
-            # If no reviews found with Type 2, try Type 1 extraction
-            if len(reviews_data) == 0 and review_type == 2:
-                self.logger.extract("No reviews found with Type 2, trying Type 1 extraction...")
-                reviews_data = self._extract_review_elements(1)
+            if not reviews_data and review_type == 2:
+                self.logger.extract("No reviews with Type 2, trying Type 1 extraction")
+                reviews_data = self.parser.extract_reviews()
             
             self.logger.extract(f"Extracted {len(reviews_data)} reviews")
-            
             return reviews_data
             
         except Exception as e:
-            self.logger.error(f"Failed to extract reviews: {str(e)}")
+            self.logger.error(f"Critical error in review extraction: {e}")
             
-            # Ultimate fallback: Try Type 1 if we were trying Type 2
             if review_type == 2:
-                self.logger.extract("Critical error in Type 2, attempting Type 1 recovery...")
+                self.logger.extract("Attempting Type 1 recovery")
                 try:
                     return self.extract_all_reviews(1)
                 except Exception as fallback_error:
-                    self.logger.error(f"Type 1 fallback also failed: {str(fallback_error)}")
-                    return []
+                    self.logger.error(f"Type 1 fallback failed: {fallback_error}")
             
             return []
