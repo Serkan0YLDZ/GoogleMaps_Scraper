@@ -70,20 +70,33 @@ class ScrollHandler:
                 return False
             
             try:
+                # Collect pre-scroll metrics
                 current_height = self.browser.driver.execute_script("return arguments[0].scrollHeight", element)
                 current_scroll = self.browser.driver.execute_script("return arguments[0].scrollTop", element)
+                pre_metrics = self._get_review_list_metrics(element)
+                pre_count = pre_metrics.get('count', 0)
+                pre_last_id = pre_metrics.get('last_id')
             except Exception as e:
                 print("[ERROR] Failed to get scroll info: {}".format(str(e)))
                 return False
             
             success = self.browser.scroll_element(container_xpath, "down", 6000)
             if success:
-                
+                # Give time for lazy-loaded reviews to render
+                time.sleep(0.6)
                 try:
                     new_height = self.browser.driver.execute_script("return arguments[0].scrollHeight", element)
                     new_scroll = self.browser.driver.execute_script("return arguments[0].scrollTop", element)
-                    
-                    if new_height > current_height or new_scroll > current_scroll:
+                    post_metrics = self._get_review_list_metrics(element)
+                    post_count = post_metrics.get('count', 0)
+                    post_last_id = post_metrics.get('last_id')
+
+                    count_increased = post_count > pre_count
+                    height_increased = new_height > current_height
+                    last_id_changed = (post_last_id is not None and post_last_id != pre_last_id)
+
+                    if count_increased or height_increased or last_id_changed:
+                        print("[DEBUG] Scroll metrics -> count: {} -> {}, height: {} -> {}, last_id: {} -> {}".format(pre_count, post_count, current_height, new_height, pre_last_id, post_last_id))
                         self.scroll_attempts = 0
                         return True
                     else:
@@ -106,6 +119,30 @@ class ScrollHandler:
         except Exception as e:
             print("[ERROR] Failed to scroll reviews section: {}".format(str(e)))
             return False
+
+    def _get_review_list_metrics(self, element):
+        try:
+            # Returns a dict with count of review cards and last review id (data-review-id) if present
+            result = self.browser.driver.execute_script(
+                """
+                var el = arguments[0];
+                var items = [];
+                try {
+                    items = el.querySelectorAll('[data-review-id]');
+                } catch (e) {
+                    items = [];
+                }
+                var count = items ? items.length : 0;
+                var lastId = count > 0 ? items[count - 1].getAttribute('data-review-id') : null;
+                return [count, lastId];
+                """,
+                element
+            )
+            if isinstance(result, (list, tuple)) and len(result) == 2:
+                return { 'count': int(result[0]) if result[0] is not None else 0, 'last_id': result[1] }
+            return { 'count': 0, 'last_id': None }
+        except Exception:
+            return { 'count': 0, 'last_id': None }
 
     def scroll_reviews_section_alternative(self, container_xpath):
         try:

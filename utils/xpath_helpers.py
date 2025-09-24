@@ -7,6 +7,18 @@ class XPathHelper:
         'reviews_button': "//*[@id='QA0Szd']/div/div/div[1]/div[3]/div/div[1]/div/div/div[2]/div[3]/div/div/button[2]/div[2]/div[2]",
         'website': "//*[@id='QA0Szd']/div/div/div[1]/div[3]/div/div[1]/div/div/div[2]//a[contains(@aria-label, 'website')]" # İş detay panelini hedefleyen daha spesifik website XPath'i
     }
+
+    # Alternatif, daha toleranslı Reviews buton selektörleri
+    REVIEWS_BUTTON_ALTS = [
+        # aria-label içinde review(s)
+        "//button[contains(translate(@aria-label, 'REVIEWS', 'reviews'), 'reviews')]",
+        # role=button ve metninde review(s)
+        "//*[@role='button'][contains(translate(normalize-space(.), 'REVIEWS', 'reviews'), 'reviews')]",
+        # Yan yana sayıyla gelen Reviews bağlantıları
+        "//a[contains(translate(@aria-label, 'REVIEWS', 'reviews'), 'reviews')]",
+        # Genel: div/span içinde Reviews yazan butonlar
+        "//button[.//span[contains(translate(normalize-space(.), 'REVIEWS', 'reviews'), 'reviews')]]",
+    ]
     
     SCROLL_CONTAINERS = {
         'type1': "//*[@id='QA0Szd']/div/div/div[1]/div[3]/div/div[1]/div/div/div[3]",

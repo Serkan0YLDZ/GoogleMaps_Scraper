@@ -11,15 +11,13 @@ class DataScraper:
         try:
             print("[INFO] Extracting business information...")
             
-            business_name = self.browser.get_element_text(XPathHelper.BUSINESS_INFO['name'], timeout=15) # Zaman aşımını artırıyorum
+            business_name = self.browser.get_element_text(XPathHelper.BUSINESS_INFO['name'], timeout=15)
             
-            # Rating bilgisini aria-label niteliğinden çek ve ayrıştır
             raw_rating_label = self.browser.get_element_attribute(XPathHelper.BUSINESS_INFO['rating'], 'aria-label', timeout=15)
-            rating = self._parse_rating_from_aria_label(raw_rating_label)
-            
+            rating = self._parse_rating_from_aria_label(raw_rating_label)            
             address = self._extract_aria_label_info("Address:")
             phone = self._extract_aria_label_info("Phone:")
-            website = self._extract_website_url(timeout=15) # Zaman aşımını artırıyorum
+            website = self._extract_website_url(timeout=15) 
             maps_url = self.browser.get_current_url()
             
             business_data = {
@@ -41,7 +39,7 @@ class DataScraper:
     def scrape_reviews(self, business_type):
         try:
             print("[INFO] Clicking reviews button...")
-            if not self.browser.click_element(XPathHelper.BUSINESS_INFO['reviews_button']):
+            if not self._open_reviews_panel():
                 print("[ERROR] Failed to click reviews button")
                 return []
             
@@ -57,6 +55,68 @@ class DataScraper:
         except Exception as e:
             print("[ERROR] Failed to scrape reviews: {}".format(str(e)))
             return []
+
+    def _open_reviews_panel(self):
+        try:
+            # 1) Primary click
+            if self.browser.click_element(XPathHelper.BUSINESS_INFO['reviews_button']):
+                if self._verify_reviews_opened():
+                    return True
+            
+            # 2) Try alternative selectors
+            for alt_xpath in getattr(XPathHelper, 'REVIEWS_BUTTON_ALTS', []):
+                if self.browser.is_element_present(alt_xpath, 2):
+                    try:
+                        elem = self.browser.wait_for_element(alt_xpath, 3)
+                        if elem:
+                            # JS click to avoid overlay issues
+                            self.browser.driver.execute_script("arguments[0].click();", elem)
+                            if self._verify_reviews_opened():
+                                return True
+                    except Exception:
+                        pass
+            
+            # 3) Fallback: search global buttons/links with text Reviews and click first visible
+            try:
+                candidates = self.browser.find_elements("//*[self::button or self::a][contains(translate(normalize-space(.), 'REVIEWS', 'reviews'), 'reviews')]")
+                for c in candidates:
+                    try:
+                        if c.is_displayed():
+                            self.browser.driver.execute_script("arguments[0].click();", c)
+                            if self._verify_reviews_opened():
+                                return True
+                    except Exception:
+                        continue
+            except Exception:
+                pass
+            
+            return False
+        except Exception as e:
+            print("[ERROR] Failed to open reviews panel: {}".format(str(e)))
+            return False
+
+    def _verify_reviews_opened(self):
+        try:
+            # Heuristics: Reviews container must appear OR an element that only exists in Reviews tab
+            possible_containers = [
+                "//*[@id='QA0Szd']/div/div/div[1]/div[3]/div/div[1]/div/div/div[3]",
+                "//*[@id='QA0Szd']/div/div/div[1]/div[3]/div/div[1]/div/div/div[5]",
+            ]
+            for xpath in possible_containers:
+                if self.browser.is_element_present(xpath, 3):
+                    return True
+            
+            # Also allow detection by presence of review cards
+            try:
+                has_cards = self.browser.driver.execute_script("return document.querySelectorAll('[data-review-id]').length > 0;")
+                if has_cards:
+                    return True
+            except Exception:
+                pass
+            
+            return False
+        except Exception:
+            return False
     
     def _scroll_all_reviews(self, container_xpath):
         try:
@@ -226,7 +286,7 @@ class DataScraper:
                 if href:
                     return href
             return ""
-        except Exception as e: # Hata yakalamayı iyileştiriyorum
+        except Exception as e: 
             print(f"[ERROR] Failed to extract website URL: {e}")
             return ""
     
