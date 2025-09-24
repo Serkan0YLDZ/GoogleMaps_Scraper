@@ -36,7 +36,6 @@ class BrowserManager:
     def navigate_to_url(self, url):
         try:
             self.driver.get(url)
-            time.sleep(3)
             return True
         except WebDriverException as e:
             print("[ERROR] Failed to navigate to URL: {}".format(str(e)))
@@ -56,7 +55,6 @@ class BrowserManager:
             element = self.wait_for_element(xpath, timeout)
             if element:
                 self.driver.execute_script("arguments[0].click();", element)
-                time.sleep(1)
                 return True
             return False
         except Exception as e:
@@ -96,8 +94,6 @@ class BrowserManager:
                         self.driver.execute_script(f"arguments[0].scrollTop += {pixels};", element)
                     else:
                         self.driver.execute_script(f"arguments[0].scrollTop -= {pixels};", element)
-                    
-                    time.sleep(0.5)  
                     
                     return True
                 except Exception as js_error:

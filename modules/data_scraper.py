@@ -152,7 +152,6 @@ class DataScraper:
                 if more_buttons:
                     try:
                         self.browser.driver.execute_script("arguments[0].click();", more_buttons[0])
-                        self.browser.wait(1)
                         
                         updated_text_elements = self.browser.find_elements(f"{text_container_xpath}//span[@class='wiI7pd']")
                         if updated_text_elements:
@@ -242,49 +241,4 @@ class DataScraper:
             print(f"[ERROR] Failed to parse rating from aria-label: {e}")
             return ""
     
-    def _extract_review_text_new(self, review_xpath_dict):
-        try:
-            review_divs = self.browser.find_elements("//div[@class='MyEned']")
-            
-            for div in review_divs:
-                div_id = div.get_attribute("id")
-                if not div_id:
-                    continue
-                
-                text_xpaths = XPathHelper.get_review_text_xpath(div_id)
-                
-                more_buttons = self.browser.find_elements(text_xpaths['more_button'])
-                if more_buttons:
-                    try:
-                        more_button = more_buttons[0]
-                        self.browser.driver.execute_script("arguments[0].click();", more_button)
-                        self.browser.wait(1)
-                    except Exception:
-                        pass
-                
-                text_elements = self.browser.find_elements(text_xpaths['text_span'])
-                if not text_elements:
-                    text_elements = self.browser.find_elements(text_xpaths['text_span_alt'])
-                
-                if text_elements:
-                    text = text_elements[0].text.strip()
-                    if text and len(text) > 10:
-                        return text
-            
-            return self._extract_review_text_fallback()
-            
-        except Exception as e:
-            print("[ERROR] Failed to extract review text: {}".format(str(e)))
-            return ""
-    
-    def _extract_review_text_fallback(self):
-        try:
-            text_elements = self.browser.find_elements("//span[@class='wiI7pd']")
-            if text_elements:
-                for element in text_elements:
-                    text = element.text.strip()
-                    if text and len(text) > 10:
-                        return text
-            return ""
-        except Exception:
-            return ""
+    # Removed unused experimental text extraction methods

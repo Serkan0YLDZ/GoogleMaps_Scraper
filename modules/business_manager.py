@@ -1,5 +1,4 @@
 from utils.xpath_helpers import XPathHelper
-import time
 
 class BusinessManager:
     def __init__(self, browser_manager, data_scraper, data_saver, scroll_handler):
@@ -129,7 +128,6 @@ class BusinessManager:
             except Exception:
                 self._preload_all_results()
 
-            end_of_list_reached = True  # list is already preloaded
             batch_buffer = []
             part_index = 1
             
@@ -230,16 +228,6 @@ class BusinessManager:
                 
         except Exception as e:
             print("[ERROR] Failed to process single business: {}".format(str(e)))
-    
-    def _process_single_business_no_reviews(self, business_type):
-        try:
-            business_data = self.data_scraper.scrape_business_info(business_type)
-            if business_data:
-                self.data_saver.save_business_info(business_data)
-                print("[INFO] Business info saved successfully (reviews skipped)")
-            self._clear_memory()
-        except Exception as e:
-            print(f"[ERROR] Failed to process single business without reviews: {str(e)}")
 
     def _clear_memory(self):
         try:

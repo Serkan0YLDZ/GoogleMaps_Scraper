@@ -146,11 +146,7 @@ class ScrollHandler:
             self.scroll_attempts += 1
             return False
     
-    def check_scroll_end(self, container_xpath):
-        try:
-            return self.scroll_attempts >= self.max_scroll_attempts
-        except Exception:
-            return True
+    # Removed unused check_scroll_end
     
     def check_end_of_list(self):
         try:
@@ -159,17 +155,7 @@ class ScrollHandler:
         except Exception:
             return False
     
-    def smooth_scroll(self, element_xpath, direction="down"):
-        try:
-            for i in range(3):
-                pixels = 6000 * (i + 1)
-                success = self.browser.scroll_element(element_xpath, direction, pixels)
-                if not success:
-                    break
-            return True
-        except Exception as e:
-            print("[ERROR] Smooth scroll failed: {}".format(str(e)))
-            return False
+    # Removed unused smooth_scroll
     
     def is_scroll_at_bottom(self, container_xpath):
         try:

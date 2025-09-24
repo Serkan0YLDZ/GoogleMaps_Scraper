@@ -7,7 +7,7 @@ from modules.scroll_handler import ScrollHandler
 
 def main():
     if len(sys.argv) != 2:
-        print("[ERROR] Usage: python3 mainNoReviews.py {search_word}")
+        print("[ERROR] Usage: python3 main_no_reviews.py {search_word}")
         sys.exit(1)
     
     search_word = sys.argv[1].strip()
