@@ -107,7 +107,6 @@ class BusinessManager:
                 self.current_business_index += 1
                 self.total_businesses_processed += 1
                 
-                time.sleep(2)
             
             self._print_summary()
             return True
@@ -123,39 +122,86 @@ class BusinessManager:
                 print("[ERROR] No businesses found")
                 return False
             
-            end_of_list_reached = False
+            # Preload all results upfront (fast scroll to end once)
+            # Use fast continuous scrolling to end without sleeps
+            try:
+                self.scroll_handler.scroll_results_to_end_fast()
+            except Exception:
+                self._preload_all_results()
+
+            end_of_list_reached = True  # list is already preloaded
+            batch_buffer = []
+            part_index = 1
             
             while True:
                 business_xpath = XPathHelper.get_business_xpath(self.current_business_index)
                 
                 if not self.browser.is_element_present(business_xpath, 3):
-                    if not end_of_list_reached:
-                        if self.scroll_handler.check_end_of_list():
-                            end_of_list_reached = True
-                        elif not self.scroll_handler.scroll_results_panel():
-                            print("[INFO] No more businesses to scroll")
-                            break
-                        continue
-                    else:
-                        break
+                    break
                 
                 business_type = self.determine_business_type(self.current_business_index)
                 print(f"[INFO] Processing business {self.current_business_index + 1}: Business type detected: {business_type}")
                 
                 if self.click_business(self.current_business_index):
-                    self._process_single_business_no_reviews(business_type)
+                    # Scrape and buffer instead of immediate write (batching)
+                    try:
+                        business_data = self.data_scraper.scrape_business_info(business_type)
+                        if business_data:
+                            batch_buffer.append(business_data)
+                            print("[INFO] Buffered business info (batch size: {})".format(len(batch_buffer)))
+                            if len(batch_buffer) >= 20:
+                                self.data_saver.save_business_info_part_csv(batch_buffer, part_index)
+                                batch_buffer = []
+                                part_index += 1
+                    except Exception as e:
+                        print("[ERROR] Failed to buffer business info: {}".format(str(e)))
                 
                 self.current_business_index += 1
                 self.total_businesses_processed += 1
                 
-                time.sleep(2)
-            
+            # Flush remaining records
+            if batch_buffer:
+                self.data_saver.save_business_info_part_csv(batch_buffer, part_index)
+                batch_buffer = []
+                part_index += 1
+
+            # Merge parts into a final timestamped CSV and remove parts
+            self.data_saver.merge_business_info_parts_to_final_csv(remove_parts=True)
+
             self._print_summary()
             return True
             
         except Exception as e:
             print("[ERROR] Failed to process businesses without reviews: {}".format(str(e)))
             return False
+
+    def _preload_all_results(self):
+        try:
+            print("[INFO] Preloading all results by scrolling to the end of the list...")
+            stagnant_attempts = 0
+            max_stagnant_attempts = 3
+
+            previous_count = self.get_business_list()
+            while True:
+                if self.scroll_handler.check_end_of_list():
+                    print("[INFO] Reached end of results list.")
+                    break
+                if not self.scroll_handler.scroll_results_panel():
+                    print("[INFO] No more scroll possible.")
+                    break
+
+                current_count = self.get_business_list()
+                if current_count <= previous_count:
+                    stagnant_attempts += 1
+                    if stagnant_attempts >= max_stagnant_attempts:
+                        print("[INFO] No growth in results; stopping preload.")
+                        break
+                else:
+                    stagnant_attempts = 0
+                    previous_count = current_count
+            print("[INFO] Preload complete. Total items visible: {}".format(previous_count))
+        except Exception as e:
+            print("[ERROR] Failed during preload of results: {}".format(str(e)))
 
     def _process_single_business(self, business_type):
         try:

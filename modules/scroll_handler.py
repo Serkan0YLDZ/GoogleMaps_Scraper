@@ -13,13 +13,43 @@ class ScrollHandler:
                 return False
                 
             results_panel = "//*[@id='QA0Szd']/div/div/div[1]/div[2]/div/div[1]/div/div/div[1]/div[1]"
-            success = self.browser.scroll_element(results_panel, "down", 500)
+            success = self.browser.scroll_element(results_panel, "down", 5000)
             if success:
                 print("[INFO] Scrolled results panel")
                 return True
             return False
         except Exception as e:
             print("[ERROR] Failed to scroll results panel: {}".format(str(e)))
+            return False
+
+    def scroll_results_panel_fast(self):
+        try:
+            if self.check_end_of_list():
+                return False
+            results_panel = "//*[@id='QA0Szd']/div/div/div[1]/div[2]/div/div[1]/div/div/div[1]/div[1]"
+            escaped_xpath = results_panel.replace("'", "\\'")
+            self.browser.driver.execute_script(f"""
+                var element = document.evaluate('{escaped_xpath}', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+                if (element) {{
+                    element.scrollBy(0, 6000);
+                }}
+            """)
+            return True
+        except Exception as e:
+            print("[ERROR] Fast scroll failed: {}".format(str(e)))
+            return False
+
+    def scroll_results_to_end_fast(self, max_iterations=10000):
+        try:
+            iterations = 0
+            while not self.check_end_of_list() and iterations < max_iterations:
+                self.scroll_results_panel_fast()
+                iterations += 1
+            if iterations >= max_iterations:
+                print("[WARN] Reached max iterations during fast preload scrolling")
+            return True
+        except Exception as e:
+            print("[ERROR] Failed during fast preload scrolling: {}".format(str(e)))
             return False
     
     def scroll_reviews_section(self, container_xpath):
@@ -48,7 +78,6 @@ class ScrollHandler:
             
             success = self.browser.scroll_element(container_xpath, "down", 6000)
             if success:
-                time.sleep(0.5)
                 
                 try:
                     new_height = self.browser.driver.execute_script("return arguments[0].scrollHeight", element)
@@ -98,7 +127,6 @@ class ScrollHandler:
                         element.scrollBy(0, 6000);
                     }}
                 """)
-                time.sleep(1)
                 
                 self.scroll_attempts += 1
                 print("[INFO] Alternative scroll completed (attempt {}/{})".format(self.scroll_attempts, self.max_scroll_attempts))
@@ -138,7 +166,6 @@ class ScrollHandler:
                 success = self.browser.scroll_element(element_xpath, direction, pixels)
                 if not success:
                     break
-                time.sleep(0.5)
             return True
         except Exception as e:
             print("[ERROR] Smooth scroll failed: {}".format(str(e)))
